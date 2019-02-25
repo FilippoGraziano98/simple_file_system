@@ -183,19 +183,21 @@ void SimpleFS_format(SimpleFS* fs) {
 
 //search for file with name filename in directory d
 	//returns the block index of the first file block
-static int SimpleFS_findFileIndex_in_dir(DirectoryHandle* d, const char* filename, int* last_directory_block) {
+	//if last_directory_block!=NULL it also fills it with the last directory block
+static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* filename, int* last_directory_block) {
 	int err;
 	if(!d)
 		return -1;
 	
 	DiskDriver* disk = d->sfs->disk;
 	
-	*last_directory_block = d->dcb->directory->fcb.block_in_disk;
+	if(last_directory_block)
+		*last_directory_block = d->dcb->directory->fcb.block_in_disk;
 	
 	int num_files = d->dcb->directory->num_entries;
 	int directory_size = d->dcb->directory->fcb.size_in_bytes;
 
-	memcpy(d->current_block, d->dcb->directory, BLOCK_SIZE);	
+	memcpy(d->current_block, d->dcb->directory, BLOCK_SIZE);
 	//err = DiskDriver_readBlock(disk, d->current_block, d->dcb->directory->fcb.block_in_disk);
 	//check_err(err,"[SimpleFS_findFile]Error reading FirstDirectoryBlock from on-memory image of disk");
 	
@@ -235,7 +237,8 @@ static int SimpleFS_findFileIndex_in_dir(DirectoryHandle* d, const char* filenam
 			if(next_block_index != -1) {
 				err = DiskDriver_readBlock(disk, d->current_block, next_block_index);
 				check_err(err,"[SimpleFS_findFile]Error reading next DirectoryBlock from on-memory image of disk");
-				*last_directory_block = next_block_index;
+				if(last_directory_block)
+					*last_directory_block = next_block_index;
 			} else if(i < num_files) {
 				printf("[SimpleFS_findFile] Unexpected EOF(2) while reading directory %s\n",d->dcb->directory->fcb.name);
 				return -1;
@@ -313,7 +316,7 @@ FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
 	DiskDriver* disk = fs->disk;
 	
 	int last_directory_block = -1;
-	int file_block_index = SimpleFS_findFileIndex_in_dir(d, filename, &last_directory_block);
+	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename, &last_directory_block);
 	if(file_block_index > 0)	{ //file already exists
 		if(DEBUG) printf("[SimpleFS_createFile] file already exists\n");
 		return NULL;
@@ -361,6 +364,7 @@ FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
 	file_handle->sfs = fs;
 	file_handle->fcb = open_file;
 	open_file->handler_cnt++;
+	printf("[SimpleFS_createFile] handler cnts on global OpenFile : %d\n", open_file->handler_cnt);
 	file_handle->directory = d->dcb;
 	d->dcb->handler_cnt++;
 	file_handle->current_block = (BlockHeader*)malloc(sizeof(DirectoryBlock));
@@ -383,7 +387,7 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 	int num_files = d->dcb->directory->num_entries;
 	int directory_size = d->dcb->directory->fcb.size_in_bytes;
 
-
+	memcpy(d->current_block, d->dcb->directory, BLOCK_SIZE);
 
 	d->pos_in_block = sizeof(BlockHeader)+sizeof(FileControlBlock)+sizeof(int);
 	d->pos_in_dir = d->pos_in_block;
@@ -395,17 +399,19 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 			printf("[SimpleFS_readDir] Unexpected EOF(1) while reading directory %s\n",d->dcb->directory->fcb.name);
 			return -1;
 		}
-		//I am accessing *(int*)((void*)(d->current_block)+(d->pos_in_block))
+
 		if(d->pos_in_dir < BLOCK_SIZE)//if FirstDirectoryBlock
 			file_block_index = ((FirstDirectoryBlock*)d->current_block)->file_blocks[i];
 		else {
 			int index =  num_files - (BLOCK_SIZE-sizeof(BlockHeader)-sizeof(FileControlBlock)-sizeof(int))/sizeof(int) - (d->dcb->directory->fcb.size_in_blocks - 2)*(BLOCK_SIZE-sizeof(BlockHeader))/sizeof(int);
 			file_block_index = ((DirectoryBlock*)d->current_block)->file_blocks[index];
 		}
-			
-			
+		
+		if(DEBUG) printf("[SimpleFS_readDir] file at %d\n",file_block_index);
 		err = DiskDriver_readBlock(disk, &file_block, file_block_index);
 		check_err(err,"[SimpleFS_readDir]Error reading next FirstFileBlock from on-memory image of disk");
+		
+		if(DEBUG) printf("[SimpleFS_readDir] - %s\n",file_block.fcb.name);
 		
 		strncpy(names[i], file_block.fcb.name, NAME_LEN);
 		
@@ -431,31 +437,133 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 	return i;
 }
 
+static OpenFileInfo* SimpleFs_findGlobalOpenFileInfo(SimpleFS* fs, const char* name, int directory_block) {
+	ListItem* curr_file_item = fs->OpenFiles.first;
+	
+	OpenFileInfo* curr_file;
+	FirstFileBlock* file_blk;
+	
+	while(curr_file_item) {
+		curr_file = (OpenFileInfo*)curr_file_item;
+		file_blk = curr_file->file;
+		
+		if(strncmp(file_blk->fcb.name, name, NAME_LEN)==0 && file_blk->fcb.directory_block==directory_block)
+			return curr_file;
+		
+		curr_file_item = curr_file_item->next;
+	}
+	
+	return NULL;
+}
+
+FileHandle* SimpleFS_openFile(DirectoryHandle* d, const char* filename) {
+	if(DEBUG) printf("[SimpleFS_openFile] open: %s\n",filename);
+	int err;
+	if(!d)
+		return NULL;
+	
+	SimpleFS* fs = d->sfs;
+	DiskDriver* disk = fs->disk;
+	
+	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename, NULL);
+	if(file_block_index < 0)	{ //file does not exist
+		if(DEBUG) printf("[SimpleFS_openFile] file does not exists\n");
+		return NULL;
+	}
+	
+	if(DEBUG) printf("[SimpleFS_openFile] file at block %d\n", file_block_index);
+	
+	OpenFileInfo* open_file;
+	
+	open_file = SimpleFs_findGlobalOpenFileInfo(fs, filename, d->dcb->directory->fcb.block_in_disk);
+	if(DEBUG && open_file) printf("[SimpleFS_openFile] file in Global OpenFiles at %p\n", open_file);
+	
+	if(!open_file) {
+		if(DEBUG) printf("[SimpleFS_openFile] file not in Global OpenFiles list\n");
+		FirstFileBlock* file_start = (FirstFileBlock*)malloc(sizeof(FirstFileBlock));
+		err = DiskDriver_readBlock(disk, file_start, file_block_index);
+		check_err(err,"[SimpleFS_openFile]Error reading FirstFileBlock from on-memory image of disk");
+	
+		open_file = (OpenFileInfo*)malloc(sizeof(OpenFileInfo));
+		open_file->list.prev = 0;
+		open_file->list.next = 0;
+		open_file->file = file_start;
+		open_file->handler_cnt = 0;
+		List_insert(&(fs->OpenFiles), fs->OpenFiles.last, (ListItem*)open_file);
+	}
+	
+	//initialize FileHandle
+	FileHandle* file_handle = (FileHandle*)malloc(sizeof(FileHandle));
+	file_handle->sfs = fs;
+	file_handle->fcb = open_file;
+	open_file->handler_cnt++;
+	file_handle->directory = d->dcb;
+	d->dcb->handler_cnt++;
+	file_handle->current_block = (BlockHeader*)malloc(sizeof(DirectoryBlock));
+	err = DiskDriver_readBlock(disk, file_handle->current_block, file_block_index);
+	check_err(err,"[SimpleFS_openFile]Error reading FirstFileBlock from on-memory image of disk");
+	file_handle->pos_in_file = 0;
+	file_handle->pos_in_block = 0;
+	
+	//printResume(fs);
+	return file_handle;
+}
+
 void SimpleFS_closeFile(FileHandle* f) {
+	if(!f){
+		printf("[SimpleFS_closeFile] invalid reference\n");
+		return;
+	}
+	if(DEBUG) printf("[SimpleFS_closeFile] closing file handle : block %d\n", f->fcb->file->fcb.block_in_disk);
+	SimpleFS* fs = f->sfs;
 	//TODO should I write back to disk changes
 	f->fcb->handler_cnt--;
-	if(f->fcb->handler_cnt < 1)
+	if(DEBUG) printf("[SimpleFS_closeFile] handler cnts on global OpenFile : %d\n", f->fcb->handler_cnt);
+	if(f->fcb->handler_cnt < 1) {
+		ListItem* item = List_detach(&(fs->OpenFiles), (ListItem*)f->fcb);
+		if(DEBUG) assert(item==(ListItem*)f->fcb, "AssertionError: detatched item does not match");
+		free(f->fcb->file);
 		free(f->fcb);
-
+	}
+	
 	f->directory->handler_cnt--;
-	if(f->directory->handler_cnt < 1)
+	if(f->directory->handler_cnt < 1) {
+		ListItem* item = List_detach(&(fs->OpenDirectories), (ListItem*)f->directory);
+		if(DEBUG) assert(item==(ListItem*)f->directory, "AssertionError: detatched item does not match");
+		free(f->directory->directory);
 		free(f->directory);
+	}
 	
 	free(f->current_block);
 	free(f);
 }
 
 void SimpleFS_closeDirectory(DirectoryHandle* d) {
+	if(!d){
+		printf("[SimpleFS_closeDirectory] invalid reference\n");
+		return;
+	}
+	if(DEBUG) printf("[SimpleFS_closeDirectory] closing directory handle : block %d\n", d->dcb->directory->fcb.block_in_disk);
+	SimpleFS* fs = d->sfs;
 	//TODO should I write back to disk changes
 	
 	d->dcb->handler_cnt--;
-	if(d->dcb->handler_cnt < 1)
+	if(DEBUG) printf("[SimpleFS_closeDirectory] handler cnts on global OpenDirectories : %d\n", d->dcb->handler_cnt);
+	if(d->dcb->handler_cnt < 1) {
+		ListItem* item = List_detach(&(fs->OpenDirectories), (ListItem*)d->dcb);
+		if(DEBUG) assert(item==(ListItem*)d->dcb, "AssertionError: detatched item does not match");
+		free(d->dcb->directory);
 		free(d->dcb);
-
-	if(d->directory) {//root directory has NULL parent_dir
+	}
+	
+	if(d->directory) {
 		d->directory->handler_cnt--;
-		if(d->directory->handler_cnt < 1)
+		if(d->directory->handler_cnt < 1) {
+			ListItem* item = List_detach(&(fs->OpenDirectories), (ListItem*)d->directory);
+			if(DEBUG) assert(item==(ListItem*)d->directory, "AssertionError: detatched item does not match");
+			free(d->directory->directory);
 			free(d->directory);
+		}
 	}
 	
 	free(d->current_block);
@@ -463,6 +571,11 @@ void SimpleFS_closeDirectory(DirectoryHandle* d) {
 }
 
 void SimpleFS_close(SimpleFS* fs) {
+	if(!fs){
+		printf("[SimpleFS_close] invalid reference\n");
+		return;
+	}
+	if(DEBUG) printf("[SimpleFS_close] closing file system\n");
 	OpenFileInfo* open_file;
 	while(fs->OpenFiles.size > 0){
 		open_file = (OpenFileInfo*)List_detach(&(fs->OpenFiles), fs->OpenFiles.first);
