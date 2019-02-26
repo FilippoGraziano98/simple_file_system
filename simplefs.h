@@ -21,7 +21,7 @@ typedef struct {
 	int directory_block; 	// first block of the parent directory
 	int block_in_disk;	 	// repeated position of the block on the disk
 	char name[NAME_LEN];
-	int	size_in_bytes;		//contano solo i byte di dati, non la memoria utilizzata per le strutture di controllo
+	int	size_in_bytes;
 	int size_in_blocks;
 	int is_dir;						// 0 for file, 1 for dir
 } FileControlBlock;
@@ -98,11 +98,25 @@ typedef struct {
 	SimpleFS* sfs;															// pointer to memory file system structure
 	OpenDirectoryInfo* globalOpenDirectoryInfo;	// pointer to the first block of the directory(read it)
 	OpenDirectoryInfo* parent_directory;				// pointer to the parent directory (null if top level)
-	BlockHeader* current_block;									// current block in the directory (last block)
+	BlockHeader* current_block;									// current block in the directory
 	int pos_in_dir;															// absolute position of the cursor in the directory
 	int pos_in_block;														// relative position of the cursor in the block
 } DirectoryHandle;
 
+/**
+ *NOTE: I substituted all ptrs to blocks (FirstDirectoryBlock*, ...)
+ *				with block indexes (to which I can access through DiskDriver_readBlock)
+ * 				otherwise I had to possibilities:
+ *					- store a ptr to a block in the mmapped region
+ *							bad, since I want to access disk only through DiskDriver
+ *					- store a ptr to a copy of the block in the mmaped region
+ *							bad, I should have to bother keeping them congruent
+ *							and what if I have a two handles to the same file
+ *		NO! now I only mmap info block at the beginning
+ *			so read file/directory blocks only when needed and bring them to memory
+ * TODO but when am I supposed to release parent_directory ptr??
+ *		it may happen it has already been freed!
+ */
 
 // initializes a file system on an already made disk
 	// if disk empty, creates root directory /
@@ -140,8 +154,8 @@ void SimpleFS_closeDirectory(DirectoryHandle* d);
 // returns the number of bytes written
 int SimpleFS_write(FileHandle* f, void* data, int size);
 
-// reads from the file, at current position size bytes stored in data
-// (reads until EOF if necessary, then stops)
+// writes in the file, at current position size bytes stored in data
+// overwriting and allocating new space if necessary
 // returns the number of bytes read
 int SimpleFS_read(FileHandle* f, void* data, int size);
 
@@ -155,8 +169,7 @@ int SimpleFS_seek(FileHandle* f, int pos);
 // it does side effect on the provided handle
 int SimpleFS_changeDir(DirectoryHandle* d, char* dirname);
 
-// creates a new directory in the current one (passed as d)
-// (stored in fs->current_directory_block)
+// creates a new directory in the current one (stored in fs->current_directory_block)
 // 0 on success
 // -1 on error
 int SimpleFS_mkDir(DirectoryHandle* d, char* dirname);
@@ -164,7 +177,7 @@ int SimpleFS_mkDir(DirectoryHandle* d, char* dirname);
 // removes the file in the current directory
 // returns -1 on failure 0 on success
 // if a directory, it removes recursively all contained files
-int SimpleFS_remove(DirectoryHandle* d, char* filename);
+int SimpleFS_remove(SimpleFS* fs, char* filename);
 
 //closes all open files/directories
 void SimpleFS_close(SimpleFS* fs);
