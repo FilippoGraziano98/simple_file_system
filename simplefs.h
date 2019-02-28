@@ -21,7 +21,7 @@ typedef struct {
 	int directory_block; 	// first block of the parent directory
 	int block_in_disk;	 	// repeated position of the block on the disk
 	char name[NAME_LEN];
-	int	size_in_bytes;
+	int	size_in_bytes;		//contano solo i byte di dati, non la memoria utilizzata per le strutture di controllo
 	int size_in_blocks;
 	int is_dir;						// 0 for file, 1 for dir
 } FileControlBlock;
@@ -98,10 +98,13 @@ typedef struct {
 	SimpleFS* sfs;															// pointer to memory file system structure
 	OpenDirectoryInfo* globalOpenDirectoryInfo;	// pointer to the first block of the directory(read it)
 	OpenDirectoryInfo* parent_directory;				// pointer to the parent directory (null if top level)
-	BlockHeader* current_block;									// current block in the directory
+	BlockHeader* current_block;									// current block in the directory (last block)
 	int pos_in_dir;															// absolute position of the cursor in the directory
 	int pos_in_block;														// relative position of the cursor in the block
 } DirectoryHandle;
+
+//TODO change use of dirs, current_block not for iteration but as for filesystem
+//and changing size_in_bytes of dirs
 
 /**
  *NOTE: I substituted all ptrs to blocks (FirstDirectoryBlock*, ...)
@@ -154,8 +157,8 @@ void SimpleFS_closeDirectory(DirectoryHandle* d);
 // returns the number of bytes written
 int SimpleFS_write(FileHandle* f, void* data, int size);
 
-// writes in the file, at current position size bytes stored in data
-// overwriting and allocating new space if necessary
+// reads from the file, at current position size bytes stored in data
+// (reads until EOF if necessary, then stops)
 // returns the number of bytes read
 int SimpleFS_read(FileHandle* f, void* data, int size);
 
