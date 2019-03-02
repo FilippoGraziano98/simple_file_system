@@ -10,7 +10,7 @@ BitMapEntryKey BitMap_blockToIndex(int num) {
 }
 
 int BitMap_indexToBlock(int entry, uint8_t bit_num) {
-	return entry*8 + bit_num;			// bit_num ??
+	return entry*8 + bit_num;			
 }
 
 int BitMap_get(BitMap* bmap, int start, int status) {
