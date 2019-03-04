@@ -1,46 +1,22 @@
 #include "disk_driver.h"
 #include "error.h"
+#include "bitmap.h"
 #include <stdio.h>
 #include <stdlib.h> 
 
 #define BLOCK_SIZE 512
 
-// this is stored in the 1st block of the disk
-typedef struct {
-  int num_blocks;
-  int bitmap_blocks;   // how many blocks in the bitmap
-  int bitmap_entries;  // how many bytes are needed to store the bitmap
-  
-  int free_blocks;     // free blocks
-  int first_free_block;// first block index
-} DiskHeader; 
-
-typedef struct {
-  DiskHeader* header; // mmapped
-  char* bitmap_data;  // mmapped (bitmap)
-  int fd; // for us
-} DiskDriver;
-
-/**
-   The blocks indices seen by the read/write functions 
-   have to be calculated after the space occupied by the bitmap
-*/
-
-
 static void DiskDriver_initDiskHeader(DiskHeade* dh, int num_blocks, int entries, int free_blocks, int first_free_block){
-	
 	dh -> num_blocks = num_blocks;
 	dh -> bitmap_blocks = num_blocks;  
 	dh -> bitmap_entries = entries;  
   
 	dh -> free_blocks = free_blocks;     
 	dh -> first_free_block = first_free_block;
-
 }
 
 
 void DiskDriver_init(DiskDriver* disk, const char* filename, int num_blocks) {
-
 	int ret;
 	int fd = open(filename, O_CREAT | O_RDWR, 0600);
 	
@@ -72,6 +48,34 @@ void DiskDriver_init(DiskDriver* disk, const char* filename, int num_blocks) {
 	}	
 	
 	disk->bitmap_data &= 0;
-	
 }
+
+
+int DiskDriver_readBlock(DiskDriver* disk, void* dest, int block_num) {
+	if(!disk->bitmap_data[block_num]) {
+		return -1;
+	} 
+	
+	memcpy(dest, disk->bitmap_data + disk->header->bitmap_entries + (block_num * BLOCK_SIZE), BLOCK_SIZE);
+	return 0;
+}
+
+
+int DiskDriver_writeBlock(DiskDriver* disk, void* src, int block_num) {
+
+	memcpy(disk->bitmap_data + disk->header->bitmap_entries + (block_num * BLOCK_SIZE) ,src , BLOCK_SIZE); // oppure disk_bitmap_data[block_num] + disk->header->bitmap_entries ?
+
+	BitMap* bitmap;
+	bitmap->num_bits = disk->header->bitmap_blocks;
+	bitmap->entries = disk->bitmap_data;
+
+	if (bitmap_set(bmap, block_num, 1) == -1) {
+		return -1;
+	}
+	
+	disk->header->free_blocks--;
+	
+	return 0;
+}
+
 
