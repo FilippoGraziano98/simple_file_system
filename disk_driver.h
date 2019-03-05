@@ -3,13 +3,10 @@
 
 #define BLOCK_SIZE 512
 
-extern const char MAGIC_NUMBERS[8];
-
 // this is stored in the 1st block of the disk
 typedef struct {
-	char magic_numbers[sizeof(MAGIC_NUMBERS)];
   int num_blocks;
-  int bitmap_blocks;   // how many blocks in the bitmap
+  int bitmap_blocks;   // how many blocks are needed to store the bitmap
   int bitmap_entries;  // how many bytes are needed to store the bitmap
   
   int free_blocks;     // free blocks
@@ -57,5 +54,3 @@ int DiskDriver_getFreeBlock(DiskDriver* disk, int start);
 // writes the data (flushing the mmaps)
 int DiskDriver_flush(DiskDriver* disk);
 
-//munmpas the mmapped blocks and closes fd
-int DiskDriver_close(DiskDriver* disk);
