@@ -3,10 +3,15 @@
 #include "bitmap.h"
 #include <stdio.h>
 #include <stdlib.h> 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include <string.h>
+
 
 #define BLOCK_SIZE 512
 
-static void DiskDriver_initDiskHeader(DiskHeade* dh, int num_blocks, int entries, int free_blocks, int first_free_block){
+static void DiskDriver_initDiskHeader(DiskHeader* dh, int num_blocks, int entries, int free_blocks, int first_free_block){
 	dh -> num_blocks = num_blocks;
 	dh -> bitmap_blocks = (num_blocks + BLOCK_SIZE)/BLOCK_SIZE;  
 	dh -> bitmap_entries = entries;  
@@ -25,7 +30,7 @@ void DiskDriver_init(DiskDriver* disk, const char* filename, int num_blocks) {
 	int dd_size = sizeof(DiskHeader) + bitmap_size;
 	
 	void* dd_data = mmap(0, dd_size,  PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	check_err(dd_data == -1, "mmap failed\n");
+	check_err(!dd_data, "mmap failed\n");
 	
 	disk->header = (DiskHeader*)dd_data;
 	disk->bitmap_data = sizeof(DiskHeader) + (char*)dd_data;
@@ -47,12 +52,12 @@ void DiskDriver_init(DiskDriver* disk, const char* filename, int num_blocks) {
 	    DiskDriver_initDiskHeader(disk->header, num_blocks, bitmap_size, num_blocks, 0);
 	}	
 	
-	disk->bitmap_data &= 0;
+	*(disk->bitmap_data) &= 0;
 }
 
 
 int DiskDriver_readBlock(DiskDriver* disk, void* dest, int block_num) {
-	if(disk->bitmap_data[block_num] == 0 || block_num >= disk->header->block_num) {
+	if(disk->bitmap_data[block_num] == 0 || block_num >= disk->header->num_blocks) {
 		return -1;
 	} 
 	
@@ -62,7 +67,7 @@ int DiskDriver_readBlock(DiskDriver* disk, void* dest, int block_num) {
 
 
 int DiskDriver_writeBlock(DiskDriver* disk, void* src, int block_num) {
-	if (block_num >= disk->header->block_num)
+	if (block_num >= disk->header->num_blocks)
 		return -1;
 
 	memcpy(disk->bitmap_data + disk->header->bitmap_entries + (block_num * BLOCK_SIZE), src, BLOCK_SIZE); // or disk_bitmap_data[block_num] + disk->header->bitmap_entries
@@ -80,7 +85,7 @@ int DiskDriver_writeBlock(DiskDriver* disk, void* src, int block_num) {
 
 
 int DiskDriver_freeBlock(DiskDriver* disk, int block_num) {
-	if (block_num >= disk->header->block_num)
+	if (block_num >= disk->header->num_blocks)
 		return -1;
 	
 	BitMap* bitmap;
@@ -100,7 +105,7 @@ int DiskDriver_freeBlock(DiskDriver* disk, int block_num) {
 
 
 int DiskDriver_getFreeBlock(DiskDriver* disk, int start) {
-	if (start >= disk->header->block_num)
+	if (start >= disk->header->num_blocks)
 		return -1;
 	
 	if (start < disk->header->first_free_block)
@@ -114,7 +119,6 @@ int DiskDriver_getFreeBlock(DiskDriver* disk, int start) {
 }
 
 
-// writes the data (flushing the mmaps)
 int DiskDriver_flush(DiskDriver* disk) {
     int ret;
     int dd_size = sizeof(DiskHeader) + disk->header->bitmap_entries + disk->header->num_blocks * BLOCK_SIZE;
