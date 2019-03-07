@@ -51,7 +51,10 @@ static void printResume(SimpleFS* fs) {
 	for (i=0; i<(root.num_entries); i++) {
 		err = DiskDriver_readBlock(fs->disk, &file, root.file_blocks[i]);
 		check_err(err,"[printResume]Error reading FirstFileBlock to on-memory image of disk");
-		printInfo_file(&file);
+		if(file.fcb.is_dir)
+			printInfo_dir((FirstDirectoryBlock*)&file);
+		else
+			printInfo_file(&file);
 	}
 }
 
@@ -207,12 +210,18 @@ void SimpleFS_format(SimpleFS* fs) {
 
 //search for file with name filename in directory d
 	//returns the block index of the first file block
-static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* filename) {
+	//if is_dir is not NULL, it will be set to 1 if dir, 0 if file
+static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* filename, int* is_dir) {
+	if(DEBUG) printf("[SimpleFS_findFile] look for: %s\n",filename);
 	int err;
 	if(!d)
 		return -1;
 	
 	DiskDriver* disk = d->sfs->disk;
+	
+	//default I initialize it as file, change it if dir
+	if(is_dir)
+		*is_dir = 0;
 	
 	int num_files = d->globalOpenDirectoryInfo->dir_start->num_entries;
 	int directory_size = d->globalOpenDirectoryInfo->dir_start->fcb.size_in_bytes;
@@ -236,7 +245,7 @@ static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* file
 			return -1;
 		}
 		//I am accessing *(int*)((void*)(d->current_block)+(d->pos_in_block))
-		if( !(aux_block->previous_block) )//if FirstDirectoryBlock
+		if( aux_block->previous_block == -1 )//if FirstDirectoryBlock
 			file_block_index = ((FirstDirectoryBlock*)aux_block)->file_blocks[i];
 		else {
 			int index =  i - (BLOCK_SIZE-sizeof(BlockHeader)-sizeof(FileControlBlock)-sizeof(int))/sizeof(int) - ((i%BLOCK_SIZE) - 1)*(BLOCK_SIZE-sizeof(BlockHeader))/sizeof(int);
@@ -248,7 +257,10 @@ static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* file
 		check_err(err,"[SimpleFS_findFile]Error reading next FirstFileBlock from on-memory image of disk");
 		
 		strncpy(current_name, file_block.fcb.name, NAME_LEN);
+		if(DEBUG) printf("[SimpleFS_findFile] next filename : %s\n",current_name);
 		if(strncmp(current_name, filename, NAME_LEN) == 0) {
+			if(is_dir && file_block.fcb.is_dir) //if dir set as dir
+				*is_dir = 1;
 			free(aux_block);
 			return file_block_index;
 		}
@@ -275,33 +287,18 @@ static int SimpleFS_findFile_diskBlockIndex(DirectoryHandle* d, const char* file
 	return -1;
 }
 
-FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
-	if(DEBUG) printf("[SimpleFS_createFile] create: %s\n",filename);
+static void SimpleFS_addFileEntry_inDir(SimpleFS* fs, DirectoryHandle* d, int new_file_index) {
+	if( !fs || ! d)
+		return;
+	
 	int err;
-	if(!d)
-		return NULL;
-	
-	SimpleFS* fs = d->sfs;
+
 	DiskDriver* disk = fs->disk;
-	
-	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename);
-	if(file_block_index > 0)	{ //file already exists
-		if(DEBUG) printf("[SimpleFS_createFile] file already exists\n");
-		return NULL;
-	}
-	
-	//get a free block on disk for the file
-	int new_file_index = DiskDriver_getFreeBlock(disk, 0);
-	check_err(new_file_index,"[SimpleFS_createFile]Appears there is no free block in disk.");
-	if(DEBUG) printf("\t[SimpleFS_createFile] free block for file: %d\n",new_file_index);
-	//aggiungo nell'elenco dei file nella directory
-		//l'indice del blocco appena aggiunto
-	
+
 	int curr_pos_in_block = d->pos_in_block;
 	int size_blcks = d->globalOpenDirectoryInfo->dir_start->fcb.size_in_blocks;
 	int num_entries = d->globalOpenDirectoryInfo->dir_start->num_entries;
-		
-	//add file_entry in dir list [until line 438]
+
 	while(d->current_block->next_block > 0) {
 		printf("[add_file_entry_in_dir] Warning: current_block was supposed to be still storing last block!!");
 		err = DiskDriver_readBlock(disk, d->current_block, d->current_block->next_block);
@@ -348,6 +345,7 @@ FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
 		size_blcks = d->globalOpenDirectoryInfo->dir_start->fcb.size_in_blocks;
 	}
 	
+	if(DEBUG) printf("[add_file_entry_in_dir] curr_num_entries : %d, add file_index: %d\n", num_entries, new_file_index);
 	if(d->globalOpenDirectoryInfo->dir_start->fcb.size_in_blocks == 1)//se ho un solo blocco
 		d->globalOpenDirectoryInfo->dir_start->file_blocks[num_entries] = new_file_index;
 	else {
@@ -362,9 +360,36 @@ FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
 	d->globalOpenDirectoryInfo->dir_start->fcb.size_in_bytes += sizeof(int);
 	err = DiskDriver_writeBlock(fs->disk, d->globalOpenDirectoryInfo->dir_start, d->globalOpenDirectoryInfo->dir_start->fcb.block_in_disk);
 	check_err(err,"[add_file_entry_in_dir]Error writing FirstDirectoryBlock to on-memory image of disk");
+}
+
+FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename) {
+	if(DEBUG) printf("[SimpleFS_createFile] create: %s\n",filename);
+	int err;
+	if(!d)
+		return NULL;
+	
+	SimpleFS* fs = d->sfs;
+	DiskDriver* disk = fs->disk;
+	
+	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename, NULL);
+	if(file_block_index > 0)	{ //file already exists
+		if(DEBUG) printf("[SimpleFS_createFile] file already exists\n");
+		return NULL;
+	}
+	
+	//get a free block on disk for the file
+	int new_file_index = DiskDriver_getFreeBlock(disk, 0);
+	check_err(new_file_index,"[SimpleFS_createFile]Appears there is no free block in disk.");
+	if(DEBUG) printf("\t[SimpleFS_createFile] free block for file: %d\n",new_file_index);
+	//aggiungo nell'elenco dei file nella directory
+		//l'indice del blocco appena aggiunto
+	
+		
+	//add file_entry in dir list
+	SimpleFS_addFileEntry_inDir(fs, d, new_file_index);
 
 	//creo il file nel blocco libero individuato
-	FirstFileBlock* file_start = (FirstFileBlock*)calloc(1, sizeof(FirstDirectoryBlock));
+	FirstFileBlock* file_start = (FirstFileBlock*)calloc(1, sizeof(FirstFileBlock));
 		//inizilializzo il BlockHeader
 	file_start->header.previous_block = -1; //this is the first block of directory
 	file_start->header.next_block = -1;//this is the last block of directory
@@ -432,12 +457,19 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 			printf("[SimpleFS_readDir] Unexpected EOF(1) while reading directory %s\n",d->globalOpenDirectoryInfo->dir_start->fcb.name);
 			return -1;
 		}
+		
+/*		int j;*/
+/*		for (j=0; j<5; j++)*/
+/*			printf("[SimpleFS_readDir] in dir %d-th file in block %d\n",j,((FirstDirectoryBlock*)d->current_block)->file_blocks[j]);*/
 
-		if( !(d->current_block->previous_block) )//if FirstDirectoryBlock
+		if( d->current_block->previous_block == -1 ) {//if FirstDirectoryBlock
 			file_block_index = ((FirstDirectoryBlock*)d->current_block)->file_blocks[i];
+			if(DEBUG) printf("[SimpleFS_readDir] still in FirstDirectoryBlock, next block_index %d\n",file_block_index);
+		}
 		else {
 			int index =  i - (BLOCK_SIZE-sizeof(BlockHeader)-sizeof(FileControlBlock)-sizeof(int))/sizeof(int) - ((i%BLOCK_SIZE) - 1)*(BLOCK_SIZE-sizeof(BlockHeader))/sizeof(int);
 			file_block_index = ((DirectoryBlock*)d->current_block)->file_blocks[index];
+			if(DEBUG) printf("[SimpleFS_readDir] not in FirstDirectoryBlock, next block_index %d\n",file_block_index);
 		}
 		
 		if(DEBUG) printf("[SimpleFS_readDir] file at %d\n",file_block_index);
@@ -451,7 +483,8 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 		i++;
 		d->pos_in_block += sizeof(int);
 		d->pos_in_dir += sizeof(int);
-	
+		
+		if(DEBUG) printf("[SimpleFS_readDir] pos_in_block : %d\n",d->pos_in_block);
 		if(d->pos_in_block >= BLOCK_SIZE) {
 			d->pos_in_block -= BLOCK_SIZE;
 			next_block_index = d->current_block->next_block;
@@ -470,7 +503,7 @@ int SimpleFS_readDir(char** names, DirectoryHandle* d) {
 	return i;
 }
 
-static OpenFileInfo* SimpleFs_findGlobalOpenFileInfo(SimpleFS* fs, const char* name, int directory_block) {
+static OpenFileInfo* SimpleFs_findGlobalOpenFileInfo(SimpleFS* fs, const char* filename, int parent_directory_block) {
 	ListItem* curr_file_item = fs->OpenFiles.first;
 	
 	OpenFileInfo* curr_file;
@@ -480,10 +513,29 @@ static OpenFileInfo* SimpleFs_findGlobalOpenFileInfo(SimpleFS* fs, const char* n
 		curr_file = (OpenFileInfo*)curr_file_item;
 		file_blk = curr_file->file_start;
 		
-		if(strncmp(file_blk->fcb.name, name, NAME_LEN)==0 && file_blk->fcb.directory_block==directory_block)
+		if(strncmp(file_blk->fcb.name, filename, NAME_LEN)==0 && file_blk->fcb.directory_block==parent_directory_block)
 			return curr_file;
 		
 		curr_file_item = curr_file_item->next;
+	}
+	
+	return NULL;
+}
+
+static OpenDirectoryInfo* SimpleFs_findGlobalOpenDirectoryInfo(SimpleFS* fs, const char* dirname, int parent_directory_block) {
+	ListItem* curr_dir_item = fs->OpenDirectories.first;
+	
+	OpenDirectoryInfo* curr_dir;
+	FirstDirectoryBlock* dir_blk;
+	
+	while(curr_dir_item) {
+		curr_dir = (OpenDirectoryInfo*)curr_dir_item;
+		dir_blk = curr_dir->dir_start;
+		
+		if(strncmp(dir_blk->fcb.name, dirname, NAME_LEN)==0 && dir_blk->fcb.directory_block==parent_directory_block)
+			return curr_dir;
+		
+		curr_dir_item = curr_dir_item->next;
 	}
 	
 	return NULL;
@@ -498,9 +550,13 @@ FileHandle* SimpleFS_openFile(DirectoryHandle* d, const char* filename) {
 	SimpleFS* fs = d->sfs;
 	DiskDriver* disk = fs->disk;
 	
-	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename);
+	int is_dir_flag = 0;
+	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, filename, &is_dir_flag);
 	if(file_block_index < 0)	{ //file does not exist
 		if(DEBUG) printf("[SimpleFS_openFile] file does not exists\n");
+		return NULL;
+	} else if( is_dir_flag ) { //file is dir
+		if(DEBUG) printf("[SimpleFS_openFile] filename is a directory\n");
 		return NULL;
 	}
 	
@@ -738,6 +794,121 @@ int SimpleFS_seek(FileHandle* f, int pos) {
 		}
 	}
 	return skipped_bytes;
+}
+
+int SimpleFS_changeDir(DirectoryHandle* d, char* dirname) {
+	if(!d)
+		return -1;
+	
+	int err;
+	SimpleFS* fs = d->sfs;
+	DiskDriver* disk = fs->disk;
+	
+	if( strncmp(dirname, "..", NAME_LEN) == 0 ) {
+		//go to parent directory
+		if(DEBUG) printf("[SimpleFS_changeDir] go to parent directory\n");
+		//1. free the globalOpenDirectoryInfo
+		d->globalOpenDirectoryInfo->handler_cnt--;
+		if(DEBUG) printf("[SimpleFS_changeDir] handler cnts on global OpenDirectories : %d\n", d->globalOpenDirectoryInfo->handler_cnt);
+		if(d->globalOpenDirectoryInfo->handler_cnt < 1) {
+			ListItem* item = List_detach(&(fs->OpenDirectories), (ListItem*)d->globalOpenDirectoryInfo);
+			if(DEBUG) assert(item==(ListItem*)d->globalOpenDirectoryInfo, "AssertionError: detatched item does not match");
+			free(d->globalOpenDirectoryInfo->dir_start);
+			free(d->globalOpenDirectoryInfo);
+		}
+		//2. parent_directory --> globalOpenDirectoryInfo
+		d->globalOpenDirectoryInfo = d->parent_directory;
+			//note: I don't increase the number of handlre_cnts on parent_directory
+				//because the total number of ptrs is always the same (just switching from parent to counter)
+				//just temporarily parent_directory has a more ptr
+		//3. parent of parent_directory --> parent_directory
+		FirstDirectoryBlock grandpa_start;
+		err = DiskDriver_readBlock(disk, &grandpa_start, d->parent_directory->dir_start->fcb.directory_block);
+		check_err(err,"[SimpleFS_changeDir]Error reading Grandpa FirstDirectoryBlock from on-memory image of disk");
+		
+		OpenDirectoryInfo* grandpa_directory = SimpleFs_findGlobalOpenDirectoryInfo(fs, grandpa_start.fcb.name, grandpa_start.fcb.directory_block);
+		if( !grandpa_directory ) {
+			printf("[SimpleFS_changeDir] Warning: the tree should be complete in GlobalOpenDirectories!\n");
+			FirstDirectoryBlock* grandpa_start_ptr = (FirstDirectoryBlock*)malloc(sizeof(FirstDirectoryBlock));
+			err = DiskDriver_readBlock(disk, grandpa_start_ptr, grandpa_start.fcb.block_in_disk);
+			check_err(err,"[SimpleFS_changeDir]Error reading Grandpa FirstDirectoryBlock from on-memory image of disk");
+			
+			grandpa_directory = (OpenDirectoryInfo*)malloc(sizeof(OpenDirectoryInfo));
+			grandpa_directory->list.prev = 0;
+			grandpa_directory->list.next = 0;
+			grandpa_directory->dir_start = grandpa_start_ptr;
+			grandpa_directory->handler_cnt = 0;
+			List_insert(&(fs->OpenDirectories), fs->OpenDirectories.last, (ListItem*)grandpa_directory);
+			return -1;
+		}
+		d->parent_directory = grandpa_directory;
+		grandpa_directory->handler_cnt++;
+		//4. reset current_block, pos_in_block, pos_in_dir	
+		memcpy(d->current_block, d->globalOpenDirectoryInfo->dir_start, BLOCK_SIZE);
+		d->pos_in_dir = sizeof(int);
+		d->pos_in_block = sizeof(BlockHeader)+sizeof(FileControlBlock)+sizeof(int);
+	} else {
+		//go to child directory
+		if(DEBUG) printf("[SimpleFS_changeDir] go to child directory\n");
+		//TODO
+	}
+}
+
+int SimpleFS_mkDir(DirectoryHandle* d, char* dirname) {
+	if(DEBUG) printf("[SimpleFS_mkDir] create: %s\n",dirname);
+	int err;
+	if(!d)
+		return -1;
+	
+	SimpleFS* fs = d->sfs;
+	DiskDriver* disk = fs->disk;
+	
+	int file_block_index = SimpleFS_findFile_diskBlockIndex(d, dirname, NULL);
+	if(file_block_index > 0)	{ //file already exists
+		if(DEBUG) printf("[SimpleFS_mkDir] file already exists\n");
+		return -1;
+	}
+	
+	//get a free block on disk for the file
+	int new_dir_index = DiskDriver_getFreeBlock(disk, 0);
+	check_err(new_dir_index,"[SimpleFS_mkDir]Appears there is no free block in disk.");
+	if(DEBUG) printf("\t[SimpleFS_mkDir] free block for dir: %d\n",new_dir_index);
+	//aggiungo nell'elenco dei file nella directory
+		//l'indice del blocco appena aggiunto
+	
+	SimpleFS_addFileEntry_inDir(fs, d, new_dir_index); 
+
+	//creo il file nel blocco libero individuato
+	FirstDirectoryBlock dir_start = {0};
+		//inizilializzo il BlockHeader
+	dir_start.header.previous_block = -1; //this is the first block of directory
+	dir_start.header.next_block = -1;//this is the last block of directory
+	dir_start.header.block_in_file = 0;
+	//inizilializzo il FileControlBlock
+	dir_start.fcb.directory_block = d->globalOpenDirectoryInfo->dir_start->fcb.block_in_disk;
+	dir_start.fcb.block_in_disk = new_dir_index;
+	strncpy(dir_start.fcb.name, dirname, NAME_LEN);
+	dir_start.fcb.size_in_bytes = sizeof(int);
+	dir_start.fcb.size_in_blocks = (sizeof(BlockHeader)+sizeof(FileControlBlock)+sizeof(int) + BLOCK_SIZE-1)/BLOCK_SIZE;
+	dir_start.fcb.is_dir = 1;
+	dir_start.num_entries = 0;
+	
+	//TODO should I backup updates immediately on disk
+		//or keep then in memory and store them to the disk when closing the handle?
+	if(DEBUG) printf("\t[SimpleFS_mkDir] write dir on block: %d\n",new_dir_index);
+	err = DiskDriver_writeBlock(disk, &dir_start, new_dir_index);
+	check_err(err,"[SimpleFS_mkDir]Error writing FirstDirectoryBlock to on-memory image of disk");
+
+	//creating directory does not open it
+/*	OpenDirectoryInfo* open_dir = (OpenDirectoryInfo*)malloc(sizeof(OpenDirectoryInfo));*/
+/*	open_dir->list.prev = 0;*/
+/*	open_dir->list.next = 0;*/
+/*	open_dir->file_start = dir_start;*/
+/*	open_dir->handler_cnt = 0;*/
+/*	List_insert(&(fs->OpenDirectories), fs->OpenDirectories.last, (ListItem*)open_dir);*/
+		
+	printResume(fs);
+	return 0;
 }
 
 void SimpleFS_closeFile(FileHandle* f) {

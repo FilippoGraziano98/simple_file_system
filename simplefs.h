@@ -103,8 +103,6 @@ typedef struct {
 	int pos_in_block;														// relative position of the cursor in the block
 } DirectoryHandle;
 
-//TODO change use of dirs, current_block not for iteration but as for filesystem
-//and changing size_in_bytes of dirs
 
 /**
  *NOTE: I substituted all ptrs to blocks (FirstDirectoryBlock*, ...)
@@ -172,7 +170,8 @@ int SimpleFS_seek(FileHandle* f, int pos);
 // it does side effect on the provided handle
 int SimpleFS_changeDir(DirectoryHandle* d, char* dirname);
 
-// creates a new directory in the current one (stored in fs->current_directory_block)
+// creates a new directory in the current one (passed as d)
+// (stored in fs->current_directory_block)
 // 0 on success
 // -1 on error
 int SimpleFS_mkDir(DirectoryHandle* d, char* dirname);
