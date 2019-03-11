@@ -56,10 +56,10 @@ void DiskDriver_init(DiskDriver* disk, const char* filename, int num_blocks) {
 	if(DEBUG) printf("[DiskDriver_init] size : %d\n",dd_size + num_blocks*BLOCK_SIZE);
 	
 	ret = posix_fallocate(fd, 0, dd_size + num_blocks*BLOCK_SIZE);
-	check_err(ret != 0, "fallocate failed\n");
+	check_err(ret, "fallocate failed\n");
 	
 	void* dd_data = mmap(0, dd_size + num_blocks*BLOCK_SIZE,  PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	check_err(!dd_data, "mmap failed\n");
+	check_err((long)dd_data, "mmap failed\n");
 	
 	if(DEBUG) printf("[DiskDriver_init] dd_data mmaped at %p\n", dd_data);
 	
