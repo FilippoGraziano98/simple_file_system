@@ -4,6 +4,7 @@
 #include "linked_list.h"
 
 #define NAME_LEN 128
+#define FIRST_DIRECTORY_BLOCK 0 //root directory is stored at block 0
 
 /*these are structures stored on disk*/
 
@@ -60,6 +61,8 @@ typedef struct {
 	BlockHeader header;
 	int file_blocks[ (BLOCK_SIZE-sizeof(BlockHeader))/sizeof(int) ];
 } DirectoryBlock;
+
+
 /******************* stuff on disk END *******************/
 
 typedef struct {
@@ -68,8 +71,6 @@ typedef struct {
 	int handler_cnt;
 } OpenDirectoryInfo;
 
-//TODO add modify flag, to see if write back or not
-//TOOD add counter of ptr to file/dir, to free struct when no one using it any more
 typedef struct {
 	ListItem list;
 	FirstFileBlock* file_start;
@@ -81,7 +82,6 @@ typedef struct {
 	// add more fields if needed
 	ListHead OpenFiles;
 	ListHead OpenDirectories;
-	OpenDirectoryInfo* current_directory_block; //the current directory block
 } SimpleFS;
 
 // this is a file handle, used to refer to open files
@@ -104,21 +104,6 @@ typedef struct {
 } DirectoryHandle;
 
 
-/**
- *NOTE: I substituted all ptrs to blocks (FirstDirectoryBlock*, ...)
- *				with block indexes (to which I can access through DiskDriver_readBlock)
- * 				otherwise I had to possibilities:
- *					- store a ptr to a block in the mmapped region
- *							bad, since I want to access disk only through DiskDriver
- *					- store a ptr to a copy of the block in the mmaped region
- *							bad, I should have to bother keeping them congruent
- *							and what if I have a two handles to the same file
- *		NO! now I only mmap info block at the beginning
- *			so read file/directory blocks only when needed and bring them to memory
- * TODO but when am I supposed to release parent_directory ptr??
- *		it may happen it has already been freed!
- */
-
 // initializes a file system on an already made disk
 	// if disk empty, creates root directory /
 	//else just returns a handle to it
@@ -137,8 +122,9 @@ void SimpleFS_format(SimpleFS* fs);
 // an empty file consists only of a block of type FirstBlock
 FileHandle* SimpleFS_createFile(DirectoryHandle* d, const char* filename);
 
-// reads in the (preallocated) blocks array, the name of all files in a directory 
-int SimpleFS_readDir(char** names, DirectoryHandle* d);
+// reads in the (preallocated) blocks array, the name of all files in a directory
+//and sets in is_dir: 1 if dir, 0 if file
+int SimpleFS_readDir(char** names, int* is_dir, DirectoryHandle* d);
 
 
 // opens a file in the	directory d. The file should be exisiting
@@ -179,9 +165,7 @@ int SimpleFS_mkDir(DirectoryHandle* d, char* dirname);
 // removes the file in the current directory
 // returns -1 on failure 0 on success
 // if a directory, it removes recursively all contained files
-int SimpleFS_remove(SimpleFS* fs, char* filename);
+int SimpleFS_remove(DirectoryHandle* d, char* filename);
 
 //closes all open files/directories
 void SimpleFS_close(SimpleFS* fs);
-	
-
