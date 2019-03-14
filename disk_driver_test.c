@@ -4,7 +4,7 @@
 #include "bitmap.h"
 #include "disk_driver.h"
 
-int main(int agc, char** argv) {  
+int main(int argc, char** argv) {
   int err;
   
   DiskDriver dd;
