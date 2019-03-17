@@ -1,7 +1,6 @@
 #include "simplefs.h"
 #include <stdio.h>
 #include <stdlib.h>
-//num_entries max:  87
 
 #define NUM_FILES 256
 #define DIRECTORIES_IN_ROOT 10
@@ -23,7 +22,7 @@ char* home_folders[NUM_USERS] = {
 "filippo","lorenzo","paolo"
 };
 
-int main(int agc, char** argv) {
+int main(int argc, char** argv) {
   printf("FirstBlock size %ld\n", sizeof(FirstFileBlock));
   printf("DataBlock size %ld\n", sizeof(FileBlock));
   printf("FirstDirectoryBlock size %ld\n", sizeof(FirstDirectoryBlock));
