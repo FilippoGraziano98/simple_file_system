@@ -16,9 +16,9 @@ Moreover the File System stores a list of opened files and directories and keeps
 ## How to run
 ```
     make
-    ./bitmap_test				# to test the bitmap
+    ./bitmap_test	# to test the bitmap
     ./disk_driver_test	# to test the disk driver
-    ./simplefs_test			# to test the file system
+    ./simplefs_test	# to test the file system
 ```
 In order to fully test this implementation, simplefs_test should be run twice. In fact reopening the binary file you should be able to see file created earlier.
 
